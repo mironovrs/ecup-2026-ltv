@@ -1,86 +1,66 @@
-# E-CUP 2026 — Задача 3: LTV/GMV пользователей поиска
+# E-CUP 2026 — Task 3: Search User LTV/GMV
 
-Прогноз суммарного GMV (Gross Merchandise Value) заказов пользователя Ozon
-за следующие 30 дней на основе его ежедневной активности в Поиске и
-Каталоге. Постановка задачи: конкурс E-CUP 2026, платформа ods.ai.
+Predict an Ozon user's total order GMV (Gross Merchandise Value) over the next 30 days from daily activity in Search and Catalog. Competition: E-CUP 2026 on ods.ai.
 
-**Public LB: 14-е место** (1.6466129691) · **Private LB: 27-е место**
-(1.6637240734)
+**Public LB: 14th place** (1.6466129691) · **Private LB: 27th place** (1.6637240734)
 
-- **Метрика**: RMSLE (`log1p`, отрицательные предсказания зануляются)
-- **Данные**: ~30.6M обезличенных дневных записей активности 250 000
-  пользователей, `2025-01-01 → 2026-02-13`
-- **Таргет**: сумма `gmv` пользователя за `2026-02-14 → 2026-03-15`
-- **Сабмит**: CSV с колонками `user_id,predict` для всех 250 000
-  пользователей
+- **Metric**: RMSLE (`log1p`, negative predictions clipped to zero).
+- **Data**: ~30.6M anonymized daily activity records for 250,000 users, `2025-01-01 → 2026-02-13`.
+- **Target**: each user's total `gmv` for `2026-02-14 → 2026-03-15`.
+- **Submission**: CSV with `user_id,predict` columns for all 250,000 users.
 
-Абсолютный сдвиг счёта между public и private (+0.0171) не значим сам по
-себе — приватная выборка объективно труднее, просели все участники.
-Значимо только относительное падение — 14 → 27, минус 13 позиций.
+The absolute public-to-private score shift (+0.0171) is not meaningful on its own: the private set was harder, and all participants' scores worsened. The meaningful change is the relative drop from 14th to 27th, a loss of 13 places.
 
-## Структура репозитория
+## Repository structure
 
 ```
-configs/  параметры данных, признаков, CV и каждого обученного варианта модели (YAML)
-src/      код пайплайна (ecup_ltv): загрузка данных, признаки, обучение, инференс, бленд
-scripts/  точки входа: build_features.py, train.py, predict.py, blend.py, train_catboost.py, multi_fold_eval.py
+configs/  data, feature, CV, and trained model variant parameters (YAML)
+src/      pipeline code (ecup_ltv): data loading, features, training, inference, blending
+scripts/  entry points: build_features.py, train.py, predict.py, blend.py, train_catboost.py, multi_fold_eval.py
 ```
 
-Это ядро решения — воспроизводимый LightGBM/CatBoost пайплайн на
-anchor-based признаках плюс бленд. За рамками репозитория остались
-одноразовые исследовательские скрипты (панельная CNN, гибрид CNN+табличные
-признаки, ~90 проб отдельных гипотез и направлений на лидерборде) — они
-были частью пути к финальному результату, но не нужны для воспроизведения
-рабочего пайплайна. Что из них измеримо перенеслось на результат — см.
-«Что сработало» ниже.
+This is the core solution: a reproducible LightGBM/CatBoost pipeline using anchor-based features and blending. One-off research scripts (a panel CNN, a CNN + tabular feature hybrid, and ~90 leaderboard probes of individual hypotheses and directions) are outside this repository. They contributed to the final result but are not required to reproduce the working pipeline. See “What worked” below for their measurable contributions.
 
-## Как воспроизвести
+## Reproduction
 
-### 1. Окружение
+### 1. Environment
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Данные
+### 2. Data
 
-Положите файлы конкурса в `data/raw/`:
+Place the competition files in `data/raw/`:
 
 ```
-data/raw/train.parquet          # сырой лог активности (страница "Данные" на ods.ai)
-data/raw/sample_submit.csv      # список user_id для инференса
+data/raw/train.parquet          # raw activity log (the Data page on ods.ai)
+data/raw/sample_submit.csv      # user_id list for inference
 ```
 
-Данные не входят в репозиторий (не наша интеллектуальная собственность
-для распространения) — только код, который их обрабатывает.
+The data is not included: we do not own the intellectual property rights to redistribute it. This repository contains only the code that processes it.
 
-### 3. Признаки
+### 3. Features
 
 ```bash
 python scripts/build_features.py
 ```
 
-Anchor-based признаки (скользящие окна по дням) для всех CV-фолдов и
-финального anchor'а, кэшируются в `artifacts/features_store/` как parquet.
+Anchor-based features (rolling daily windows) are built for all CV folds and the final anchor, then cached as Parquet files in `artifacts/features_store/`.
 
-### 4. Обучение и инференс
+### 4. Training and inference
 
 ```bash
 python scripts/train.py train_v3_top100_5seed
 python scripts/predict.py train_v3_top100_5seed
 ```
 
-`train.py` считает walk-forward CV-метрику и дообучает финальную модель на
-всех фолдах; `predict.py` пишет `artifacts/submissions/*.csv` и сверяет
-набор `user_id` с `data/raw/sample_submit.csv`.
+`train.py` computes the walk-forward CV metric and fits the final model on all folds. `predict.py` writes `artifacts/submissions/*.csv` and checks the `user_id` set against `data/raw/sample_submit.csv`.
 
-> **Важно про CV:** пост-соревновательный аудит обнаружил перекрытие
-> train/validation target windows при `stride_days=14` и `horizon_days=30`
-> — локальные CV-числа в конфигах являются legacy-оценками, а не честной
-> purged CV. См. «Чего не хватило по существу» ниже.
+> **CV caveat:** a post-competition audit found overlapping training/validation target windows with `stride_days=14` and `horizon_days=30`. The local CV scores in the configs are legacy estimates, rather than valid purged CV results. See “What was missing” below.
 
-### 5. Бленд и альтернативные модели
+### 5. Blending and alternative models
 
 ```bash
 python scripts/blend.py <run_a> <run_b> ... --submit
@@ -88,143 +68,79 @@ python scripts/train_catboost.py train_catboost_diverse
 python scripts/multi_fold_eval.py train_v3_top100_5seed
 ```
 
-## Метод
+## Method
 
-**Признаки** (`src/ecup_ltv/features.py`): для каждой anchor-даты —
-скользящие окна `7/14/30/60/90/180d/all` + YoY-30d (тот же календарный
-период год назад, без утечки, сигнал сезонности) по 12 из 16 сырых
-signal columns × 4 агрегации (`sum/mean/std/max`), plus recency/tenure,
-календарные признаки, нормализация относительно платформенного тренда,
-производные ratio/conversion-признаки, RFM-скор.
+**Features** (`src/ecup_ltv/features.py`): for each anchor date, rolling windows of `7/14/30/60/90/180d/all` plus YoY-30d (the same calendar period a year earlier, a leakage-free seasonality signal), over 12 of the 16 raw signal columns × 4 aggregations (`sum/mean/std/max`). Additional features include recency/tenure, calendar features, normalization against the platform trend, derived ratio/conversion features, and an RFM score.
 
-**BTYD** (`src/ecup_ltv/btyd.py`): BG/NBD + Gamma-Gamma — параметрическая
-модель частоты покупок и вероятности «отвала» пользователя, независимая
-от градиентного бустинга. Признаки сильны индивидуально, но избыточны
-относительно уже существующих recency/frequency-признаков.
+**BTYD** (`src/ecup_ltv/btyd.py`): BG/NBD + Gamma-Gamma, a parametric model of purchase frequency and customer dropout probability, independent of gradient boosting. These features are strong individually but redundant with the existing recency/frequency features.
 
-**CV** (`src/ecup_ltv/features.py: generate_cv_anchor_dates`):
-walk-forward — anchor-даты со страйдом 14 дней, оставляющие horizon=30
-дней будущего для таргета и ≥120 дней истории. Обычный random split здесь
-— утечка, потому что признаки на дату t используют всю историю до t.
+**CV** (`src/ecup_ltv/features.py: generate_cv_anchor_dates`): walk-forward anchor dates spaced 14 days apart, leaving a 30-day future target horizon and at least 120 days of history. An ordinary random split introduces leakage because features at date t use all history up to t.
 
-**Модели**: LightGBM (основная), CatBoost. Также пробовались панельная
-свёртка по сырому дневному ряду и гибрид CNN+табличные признаки —
-исследовательский код для них в этот репозиторий не включён (см. выше).
-target = `log1p(clip(gmv, 0))`, предсказание — `expm1`, клип к ≥0.
+**Models**: LightGBM (primary) and CatBoost. A panel convolution over raw daily sequences and a CNN + tabular feature hybrid were also explored; their research code is not included (see above). Target = `log1p(clip(gmv, 0))`; predictions use `expm1` and are clipped to ≥0.
 
-**Ансамблирование** (`src/ecup_ltv/blend.py`): усреднение в
-log1p-пространстве нескольких независимо обученных bundle'ов. Веса можно
-задавать вручную или подбирать NNLS-стекингом на out-of-fold
-предсказаниях.
+**Ensembling** (`src/ecup_ltv/blend.py`): averaging several independently trained bundles in log1p space. Weights can be set manually or fitted using NNLS stacking on out-of-fold predictions.
 
-**Проверено и не вошло в прод**: MLP, Tweedie-objective, DART-бустинг —
-ни один не дал устойчивого прироста над обычным LightGBM-регрессором.
+**Tested but excluded from the final pipeline**: MLP, Tweedie objective, and DART boosting. None delivered a consistent improvement over a standard LightGBM regressor.
 
-**Hurdle-модель как направление, а не модель**: классификатор активности +
-регрессор на активных был отклонён как *модель* (RMSLE 1.99 против
-1.665 у основного пайплайна) — верная оценка её качества. Но измеренная
-как *направление* в лог-пространстве она дала +0.0541 при 7.3σ — крупнейший
-коэффициент проекта. Причина — в бленде направление входит через
+**The hurdle model as a direction rather than a standalone model**: an activity classifier plus a regressor for active users was rejected as a *model* (RMSLE 1.99 versus 1.665 for the main pipeline), a fair assessment of its standalone quality. However, measured as a *direction* in log space, it yielded +0.0541 at 7.3σ, the largest coefficient in the project. In a blend, the direction enters through
 
 ```
-RMSLE(a)² = R₀² − 2a⟨e,d⟩ + a²⟨d,d⟩,   d = z_модель − z_база
+RMSLE(a)² = R₀² − 2a⟨e,d⟩ + a²⟨d,d⟩,   d = z_model − z_base
 ```
 
-и знак коэффициента определяет не качество модели, а куда смотрят её
-ошибки. «Отклонено как модель» и «отклонено как направление» — разные
-вердикты, и первый не влечёт второго.
+The coefficient's sign is determined by the direction of the errors, rather than standalone model quality. Rejecting a model and rejecting its direction are separate decisions; the former does not imply the latter.
 
-## Итог: разбор, что было ошибкой
+## Final results and retrospective
 
 ```
-public   1.6466129691   14 место
-private  1.6637240734   27 место
+public   1.6466129691   14th place
+private  1.6637240734   27th place
 ```
 
-Оценки экспозиции, зафиксированные ещё до закрытия приёма:
+Exposure estimates recorded before submissions closed:
 
 ```
-налог на подгонку    ~20 коэффициентов x 2.09e-5   0.00042
-инфляция отбора      лучший из ~100 сабмитов        0.00070
-вместе                                              0.00112
+fitting penalty     ~20 coefficients x 2.09e-5   0.00042
+selection inflation  best of ~100 submissions    0.00070
+combined                                         0.00112
 ```
 
-На паблике места 9–16 умещались в 0.0006 — потеря 0.0011 выносит примерно
-на 13 позиций. Оценка риска была верна по порядку величины ещё до
-закрытия — ошибка была не в расчёте, а в решении: основная линия работы
-шла через подгонку коэффициентов бленда на публичных 50 тысячах строк,
-потому что она давала измеримый результат немедленно, а работа над самой
-моделью — нет.
+On the public leaderboard, places 9–16 were separated by 0.0006; losing 0.0011 costs roughly 13 positions. The risk estimate was already correct in order of magnitude before the deadline. The mistake was the decision: most effort went into fitting blend coefficients on the 50,000 public rows because this produced an immediate measurable result, whereas model development did not.
 
-Из 0.0084 общего улучшения на паблике примерно 0.0045 пришло от алгебры
-лидерборда (цепочка из двадцати с лишним подогнанных коэффициентов бленда)
-и лишь около 0.0039 — от собственно моделей (плотные якоря, панельная CNN,
-гибрид с признаками). Вторая половина перенеслась на приват, первая — нет,
-и это было известно заранее из собственных же измерений шума.
+Of the total 0.0084 public improvement, roughly 0.0045 came from leaderboard algebra (a chain of more than twenty fitted blend coefficients), and only about 0.0039 from the models themselves (denser anchors, a panel CNN, and a feature hybrid). The model improvements transferred to the private set; the leaderboard fitting did not. Our own noise measurements had already indicated this.
 
-Правильной стратегией было остановить линию совместных решений после
-первых двух-трёх шагов, где она ещё окупалась, и всё оставшееся время
-вкладывать в модели, а не в переподгонку весов бленда.
+The right strategy would have been to stop the joint optimization approach after the first two or three useful steps and spend the remaining time improving models rather than refitting blend weights.
 
-**Чего не хватило по существу**: честной локальной валидации. Purged CV с
-эмбарго была написана только за четыре дня до конца и ни разу не доведена
-до рабочего состояния. Без неё каждая проверка гипотезы о модели стоила
-попытки на лидерборде (а их пять в день) — отсюда и перекос в сторону
-алгебры бленда: она давала ответ за минуту и не требовала обучения.
+**What was missing**: trustworthy local validation. Purged CV with an embargo was written only four days before the deadline and never made operational. Without it, every model hypothesis cost a leaderboard submission, with only five allowed per day. This encouraged blend algebra, which returned an answer in a minute without training.
 
-**Что сработало и должно переноситься на новую задачу** (измерено как
-направление в лог-пространстве, `a*` — оптимальный коэффициент):
+**What worked and should transfer to a new task** (measured as a direction in log space; `a*` is the optimal coefficient):
 
-| направление | a* |
+| Direction | a* |
 |---|---|
-| плотные якоря (шаг 7 дней вместо 14) | +0.0307 |
-| панельная CNN по сырому дневному ряду | +0.0353 |
-| гибрид: сеть + табличные признаки | +0.0199 |
-| hurdle-модель как направление | +0.0541 |
+| Denser anchors (7-day rather than 14-day stride) | +0.0307 |
+| Panel CNN over raw daily sequences | +0.0353 |
+| Hybrid: neural network + tabular features | +0.0199 |
+| Hurdle model as a direction | +0.0541 |
 
-Все четыре — изменения модели, а не перевзвешивание бленда.
+All four change the model itself rather than simply reweighting the blend.
 
-## Инструменты измерения
+## Measurement tools
 
-Переносимая часть этого решения — не признаки и не гиперпараметры, а
-четыре приёма для работы с шумным лидербордом как измерительным
-инструментом:
+The transferable part of this solution is the measurement methodology for a noisy leaderboard, rather than its features or hyperparameters:
 
-**1. Лидерборд как алгебра.** `RMSLE(a)² = R₀² − 2a⟨e,d⟩ + a²⟨d,d⟩` —
-тождество, поэтому одна проба на известном шаге `s` решает оптимальный
-коэффициент точно: `a* = ((R₀² − R_пробы²) + s²)/(2s)`. Пять раз подряд
-расчётный счёт совпал с фактическим с точностью 1e-6.
+**1. The leaderboard as algebra.** `RMSLE(a)² = R₀² − 2a⟨e,d⟩ + a²⟨d,d⟩` is an identity. A single probe at a known step `s` therefore determines the optimal coefficient exactly: `a* = ((R₀² − R_probe²) + s²)/(2s)`. On five consecutive occasions, the calculated and actual scores matched within 1e-6.
 
-**2. Ортогональность считается к оболочке, а не к файлам.** Правильная
-величина для нового направления — доля его дисперсии вне линейной
-оболочки всех уже измеренных направлений сразу: `res = d − M(MᵀM)⁻¹Mᵀd`.
-Направление с корреляцией 0.5 к каждому из четырёх измеренных может
-целиком лежать в их оболочке.
+**2. Measure orthogonality against the span, rather than individual files.** For a new direction, the relevant quantity is the share of its variance outside the linear span of all previously measured directions: `res = d − M(MᵀM)⁻¹Mᵀd`. A direction correlated at 0.5 with each of four measured directions may still lie entirely within their span.
 
-**3. Шумовой пол обучения измеряется, а не предполагается.** Прогон,
-отличающийся от базового только сидами, даёт `sd` — границу, ниже которой
-направление неотличимо от случайности (в этом проекте — 0.04177). Это
-единственный способ отличить реальный сигнал от шума сида без лишней
-попытки на лидерборде.
+**3. Measure the training noise floor.** A run differing from the baseline only in its seeds gives `sd`, the level below which a direction is indistinguishable from randomness (0.04177 in this project). This separates real signal from seed noise without another leaderboard submission.
 
-**4. Налог на приват.** Каждый коэффициент, подогнанный на публичных 50k
-из 250k строк, стоит примерно 2.09e-5 на приватной части
-(`sd(α_pub − α_priv) = 0.0083`). Честная граница сверху для числа
-подгоняемых коэффициентов — число независимых измерений, а не желаемая
-точность на паблике.
+**4. The private-set penalty.** Each coefficient fitted on the public 50k out of 250k rows costs approximately 2.09e-5 on the private set (`sd(α_pub − α_priv) = 0.0083`). An honest upper bound on the number of fitted coefficients is the number of independent measurements, rather than the desired public score precision.
 
-**5. Панель как один куб.** Сырьё для панельных моделей — дневные счётчики
-без id товаров, то есть 250 000 × 409 × 6 значений; в float16 это 1.23 ГБ
-и помещается в память целиком. Любой anchor — срез уже готового куба, а не
-новая аллокация с денсификацией лога заново.
+**5. Store the panel as one cube.** Panel models use daily counters without product IDs: 250,000 × 409 × 6 values, or 1.23 GB in float16, which fits entirely in memory. Each anchor is a slice of this prebuilt cube, avoiding a fresh allocation and densification of the log.
 
-## Воспроизводимость
+## Reproducibility
 
-- Все параметры — в `configs/*.yaml`, ничего не хардкожено в коде.
-- Все random seed фиксированы (`src/ecup_ltv/seed.py`, plus per-model seed
-  в конфиге).
-- Обучение (`train.py`) и инференс (`predict.py`) полностью разделены —
-  инференс никогда не переобучает модель, только читает сохранённый
-  bundle.
-- Каждый сохранённый bundle несёт свой резолвленный конфиг и список
-  признаков.
+- All parameters live in `configs/*.yaml`; none are hardcoded in the code.
+- All random seeds are fixed (`src/ecup_ltv/seed.py` and per-model seeds in the configs).
+- Training (`train.py`) and inference (`predict.py`) are fully separated. Inference only reads a saved bundle.
+- Each saved bundle includes its resolved config and feature list.
